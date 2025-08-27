@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # sourcelite — gerenciador source-based simples
-# versão: 0.2
+# versão: 0.3
 #
 
 set -euo pipefail
@@ -131,6 +131,31 @@ install_pkg() {
     ok "instalado: $pkg"
 }
 
+installpkg() {
+    local file="$1"
+    [ -f "$file" ] || err "arquivo não encontrado: $file"
+
+    rm -rf "$DESTDIR"
+    mkdir -p "$DESTDIR"
+
+    log "extraindo pacote: $file"
+    case "$file" in
+        *.tar.zst) tar -C "$DESTDIR" -I zstd -xf "$file" ;;
+        *.tar.gz)  tar -C "$DESTDIR" -zxf "$file" ;;
+        *.tar.xz)  tar -C "$DESTDIR" -Jxf "$file" ;;
+        *) err "formato desconhecido: $file" ;;
+    esac
+
+    fakeroot_cmd rsync -a "$DESTDIR"/ /
+
+    # Nome do pacote = nome do arquivo (sem extensão)
+    pkg=$(basename "$file" | sed 's/\.\(tar\.zst\|tar\.gz\|tar\.xz\)$//')
+
+    find "$DESTDIR" -type f | sed "s#^$DESTDIR##" > "$DB_DIR/$pkg.files"
+
+    ok "pacote instalado: $pkg"
+}
+
 remove_pkg() {
     local pkg="$1"
     run_hooks pre_remove "$pkg"
@@ -179,6 +204,7 @@ comandos:
   fetch <pkg>      baixa source
   build <pkg>      compila
   install <pkg>    instala e empacota
+  installpkg <arq> instala direto de pacote .tar.zst/.tar.gz
   remove <pkg>     remove
   list             lista recipes
   installed        lista instalados
@@ -216,6 +242,7 @@ case "$cmd" in
     fetch) shift; fetch "$@";;
     build) shift; build "$@";;
     install) shift; install_pkg "$@";;
+    installpkg) shift; installpkg "$@";;
     remove) shift; remove_pkg "$@";;
     list) list_recipes;;
     installed) list_installed;;

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # sourcelite — gerenciador source-based simples
-# versão: 0.3
+# versão: 0.5
 #
 
 set -euo pipefail
@@ -64,6 +64,20 @@ load_recipe() {
     source "$recipe"
 }
 
+ensure_deps() {
+    local pkg="$1"
+    load_recipe "$pkg"
+    local dep
+    for dep in "${DEPENDS[@]:-}"; do
+        if [ ! -f "$DB_DIR/$dep.files" ]; then
+            log "dependência faltando: $dep → instalando..."
+            install_pkg "$dep"
+        else
+            log "dependência já instalada: $dep"
+        fi
+    done
+}
+
 fetch() {
     local pkg="$1"; load_recipe "$pkg"
     run_hooks pre_fetch "$pkg"
@@ -83,7 +97,9 @@ fetch() {
 }
 
 build() {
-    local pkg="$1"; load_recipe "$pkg"
+    local pkg="$1"
+    ensure_deps "$pkg"
+    load_recipe "$pkg"
     run_hooks pre_build "$pkg"
     mkdir -p "$BUILD_DIR/$pkg"
     rm -rf "$BUILD_DIR/$pkg"/*
@@ -106,8 +122,27 @@ build() {
     run_hooks post_build "$pkg"
 }
 
+makepkg() {
+    local pkg="$1"
+    ensure_deps "$pkg"
+    load_recipe "$pkg"
+    run_hooks pre_build "$pkg"
+
+    rm -rf "$DESTDIR"
+    mkdir -p "$DESTDIR"
+
+    : "${INSTALL:=true}"
+    ( INSTALL ) 2>&1 | tee -a "$LOG_DIR/$pkg.log"
+
+    pkgfile="$PKG_DIR/$NAME-$VERSION.tar.zst"
+    fakeroot_cmd tar -C "$DESTDIR" -I zstd -cf "$pkgfile" .
+    ok "pacote criado (sem instalar): $pkgfile"
+}
+
 install_pkg() {
-    local pkg="$1"; load_recipe "$pkg"
+    local pkg="$1"
+    ensure_deps "$pkg"
+    load_recipe "$pkg"
     run_hooks pre_install "$pkg"
 
     rm -rf "$DESTDIR"
@@ -116,15 +151,12 @@ install_pkg() {
     : "${INSTALL:=true}"
     ( INSTALL ) 2>&1 | tee -a "$LOG_DIR/$pkg.log"
 
-    # Empacotamento
     pkgfile="$PKG_DIR/$NAME-$VERSION.tar.zst"
     fakeroot_cmd tar -C "$DESTDIR" -I zstd -cf "$pkgfile" .
     ok "pacote criado: $pkgfile"
 
-    # Instalação real
     fakeroot_cmd rsync -a "$DESTDIR"/ /
 
-    # Registrar arquivos
     find "$DESTDIR" -type f | sed "s#^$DESTDIR##" > "$DB_DIR/$pkg.files"
 
     run_hooks post_install "$pkg"
@@ -148,7 +180,6 @@ installpkg() {
 
     fakeroot_cmd rsync -a "$DESTDIR"/ /
 
-    # Nome do pacote = nome do arquivo (sem extensão)
     pkg=$(basename "$file" | sed 's/\.\(tar\.zst\|tar\.gz\|tar\.xz\)$//')
 
     find "$DESTDIR" -type f | sed "s#^$DESTDIR##" > "$DB_DIR/$pkg.files"
@@ -202,8 +233,9 @@ uso: sourcelite <comando> [pacote]
 comandos:
   new <nome>       cria recipe básica
   fetch <pkg>      baixa source
-  build <pkg>      compila
-  install <pkg>    instala e empacota
+  build <pkg>      compila (com deps)
+  makepkg <pkg>    compila e gera pacote (sem instalar)
+  install <pkg>    instala e empacota (com deps)
   installpkg <arq> instala direto de pacote .tar.zst/.tar.gz
   remove <pkg>     remove
   list             lista recipes
@@ -222,7 +254,7 @@ VERSION="1.0"
 SRC_URI=("http://exemplo.com/$pkg-\$VERSION.tar.gz")
 SHA256=()
 PATCHES=()
-DEPENDS=()
+DEPENDS=()  # ex: ("zlib" "openssl")
 
 BUILD() {
   ./configure --prefix=\$PREFIX
@@ -241,6 +273,7 @@ case "$cmd" in
     new) shift; new_recipe "$@";;
     fetch) shift; fetch "$@";;
     build) shift; build "$@";;
+    makepkg) shift; makepkg "$@";;
     install) shift; install_pkg "$@";;
     installpkg) shift; installpkg "$@";;
     remove) shift; remove_pkg "$@";;
